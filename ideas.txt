@@ -1,0 +1,44 @@
+Wav2Vec2 mean over time (mask‑aware)
+
+- Input/shape: After feature extraction, Wav2Vec2 returns last_hidden_state with shape [B, T, D]:
+- B: batch size
+- T: sequence length in model time steps (depends on audio duration and model downsampling)
+- D: hidden size (e.g., 768 for wav2vec2-base)
+- Variable length: Different clips have different T. For batching, shorter clips are padded to the max T in the batch. Hugging Face provides an attention_mask with shape [B, T] where
+1 marks real time steps and 0 marks padding.
+- Masked average: Convert attention_mask to shape [B, T, 1], multiply it into the hidden states, sum over the time dimension, then divide by the count of valid (non‑padded) steps:
+- Code logic: mask = attention_mask.unsqueeze(-1) then emb = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
+- If no mask is provided, it falls back to a plain mean: hidden.mean(dim=1)
+- Result: You get [B, D] where each row is the clip’s global audio embedding — fixed length because it collapses the variable T into a single average.
+- Why mask matters: Without masking, padding (zeros or learned pad values) would bias the mean downward for shorter clips. Masking ensures the mean only considers real audio steps.
+
+Video tokens mean over space/time
+
+- Preprocessing: Uniformly sample num_frames (default 32) from the video to normalize clip length. The processor resizes/crops frames to the model’s expected resolution.
+- Tokens/shape: Vision transformer–style models split frames into patches, producing token embeddings. last_hidden_state has shape [B, N_tokens, D]:
+- N_tokens equals the number of spatial patches times the temporal windows the model uses (exact factoring is internal to the model).
+- Mean across tokens: Compute tokens.mean(dim=1) to aggregate all patch/time tokens into a single [B, D] embedding for each clip.
+- Why no mask: We explicitly pick a fixed num_frames, and the processor yields a fixed patch grid, so there’s typically no padding tokens and no need for a mask. If variable tokens
+existed (e.g., ragged inputs), you’d use a mask similarly to audio.
+
+Why this yields fixed‑length vectors
+
+- Pooling collapses variable axes (T for audio; N_tokens for video) into a single vector per example.
+- The hidden size D is fixed by the model, so after pooling every clip maps to a D‑dimensional embedding regardless of original duration/resolution.
+
+Trade‑offs and alternatives
+
+- Pros of mean pooling:
+- Simple, fast, parameter‑free, robust baseline.
+- Scale‑invariant: embeddings aren’t biased by clip length or frame count when masked/normalized.
+- Cons:
+- Loses temporal order and fine spatial structure.
+- May underperform for events localized in time/space (signal gets diluted).
+- Alternatives:
+- Use a special CLS token if the model provides one (some ViTs do).
+- Attention pooling or learnable pooling (e.g., gated/attention‑weighted averages).
+- Temporal pooling before spatial pooling (or vice versa) if architecture exposes separate axes.
+- NetVLAD/Gem pooling or sequence models on top of token/time features.
+
+In this repo, both paths end with a [D] audio vector and a [D] video vector, which are concatenated into a [D_audio + D_video] feature for the classifier.
+
