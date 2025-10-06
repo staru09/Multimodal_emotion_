@@ -8,7 +8,7 @@ from tqdm import tqdm
 
 from data_loaders import discover_modalities, find_pairs_from_roots
 from audio_embeddings import extract_audio_embedding
-from vjepa_embeddings import extract_video_embedding
+from video_embeddings import extract_video_embedding
 
 
 def _cache_path(cache_root: str, label: str, src_path: str) -> str:

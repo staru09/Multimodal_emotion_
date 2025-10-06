@@ -12,7 +12,7 @@ from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
 from audio_embeddings import extract_audio_embedding
-from vjepa_embeddings import extract_video_embedding
+from video_embeddings import extract_video_embedding
 
 
 def _list_files(root: str, exts: set) -> List[str]:

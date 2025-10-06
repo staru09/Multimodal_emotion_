@@ -7,7 +7,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 
 from audio_embeddings import extract_audio_embedding
-from vjepa_embeddings import extract_video_embedding
+from video_embeddings import extract_video_embedding
 
 
 AUDIO_EXTS = {".wav", ".flac", ".mp3", ".m4a", ".ogg"}
