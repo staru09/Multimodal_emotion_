@@ -11,7 +11,7 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
-from wav2vec_embeddings import extract_audio_embedding
+from audio_embeddings import extract_audio_embedding
 from vjepa_embeddings import extract_video_embedding
 
 
@@ -387,7 +387,14 @@ def parse_args():
     p.add_argument("video_root", help="Root of video files grouped by label (e.g., video_data)")
     p.add_argument("--audio_cache", default="audio_emb", help="Directory to cache/load audio embeddings (.pt)")
     p.add_argument("--video_cache", default="video_emb", help="Directory to cache/load video embeddings (.pt)")
-    p.add_argument("--audio_model", default="facebook/wav2vec2-base")
+    p.add_argument(
+        "--audio_model",
+        default="facebook/wav2vec2-base",
+        help=(
+            "Audio embedding model preset or Hugging Face repo id "
+            "(e.g., wav2vec2-base, facebook/wav2vec2-base, whisper-small, openai/whisper-base)."
+        ),
+    )
     p.add_argument("--video_model", default="facebook/vjepa2-vitl-fpc64-256")
     p.add_argument("--num_frames", type=int, default=32)
     p.add_argument("--out_dir", default="models")
