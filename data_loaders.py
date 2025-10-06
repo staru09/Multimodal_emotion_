@@ -6,7 +6,7 @@ from typing import List, Tuple, Dict, Optional
 import torch
 from torch.utils.data import Dataset, DataLoader
 
-from wav2vec_embeddings import extract_audio_embedding
+from audio_embeddings import extract_audio_embedding
 from vjepa_embeddings import extract_video_embedding
 
 

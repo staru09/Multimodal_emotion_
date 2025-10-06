@@ -7,7 +7,7 @@ import torch
 from tqdm import tqdm
 
 from data_loaders import discover_modalities, find_pairs_from_roots
-from wav2vec_embeddings import extract_audio_embedding
+from audio_embeddings import extract_audio_embedding
 from vjepa_embeddings import extract_video_embedding
 
 
@@ -58,7 +58,14 @@ def parse_args():
                        help="Explicit audio and video roots grouped by label")
     ap.add_argument("--audio_cache", default=None, help="Directory to save audio embeddings (.pt). Defaults to <dataset_root>/.cache/audio_emb")
     ap.add_argument("--video_cache", default=None, help="Directory to save video embeddings (.pt). Defaults to <dataset_root>/.cache/video_emb")
-    ap.add_argument("--audio_model", default="facebook/wav2vec2-base")
+    ap.add_argument(
+        "--audio_model",
+        default="facebook/wav2vec2-base",
+        help=(
+            "Audio embedding model preset or Hugging Face repo id "
+            "(e.g., wav2vec2-base, facebook/wav2vec2-base, whisper-small, openai/whisper-base)."
+        ),
+    )
     ap.add_argument("--video_model", default="facebook/vjepa2-vitl-fpc64-256")
     ap.add_argument("--num_frames", type=int, default=32)
     ap.add_argument("--skip_audio", action="store_true")
@@ -103,4 +110,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

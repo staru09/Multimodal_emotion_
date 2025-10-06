@@ -1,49 +1,130 @@
 import os
 import argparse
 import pathlib
+from typing import Dict, List, Optional, Tuple
+
 import torch
 import librosa
-from typing import Optional, List
 from tqdm import tqdm
-from transformers import Wav2Vec2Processor, Wav2Vec2Model
+from transformers import (
+    Wav2Vec2Model,
+    Wav2Vec2Processor,
+    WhisperModel,
+    WhisperProcessor,
+)
 
 
-_AUDIO_MODEL = None
-_AUDIO_PROCESSOR = None
+_AUDIO_MODELS: Dict[Tuple[str, str, str], Tuple[torch.nn.Module, object]] = {}
+
+_PRESET_MODELS = {
+    "wav2vec2-base": ("wav2vec2", "facebook/wav2vec2-base"),
+    "wav2vec2-large": ("wav2vec2", "facebook/wav2vec2-large-960h"),
+    "whisper-tiny": ("whisper", "openai/whisper-tiny"),
+    "whisper-base": ("whisper", "openai/whisper-base"),
+    "whisper-small": ("whisper", "openai/whisper-small"),
+    "whisper-medium": ("whisper", "openai/whisper-medium"),
+    "whisper-large-v2": ("whisper", "openai/whisper-large-v2"),
+}
 
 
-def _ensure_audio_model(model_name: str = "facebook/wav2vec2-base", device: Optional[torch.device] = None):
-    global _AUDIO_MODEL, _AUDIO_PROCESSOR
+def _resolve_model_spec(model_name: str) -> Tuple[str, str]:
+    """Return (backend, huggingface_repo_id)."""
+    name = model_name.strip()
+    if not name:
+        raise ValueError("Model name must be a non-empty string")
+
+    preset = _PRESET_MODELS.get(name.lower())
+    if preset:
+        return preset
+
+    repo_id = name
+    lower = repo_id.lower()
+    if "whisper" in lower:
+        backend = "whisper"
+    elif "wav2vec" in lower:
+        backend = "wav2vec2"
+    else:
+        raise ValueError(
+            f"Could not infer audio backend for model '{model_name}'. "
+            "Specify a known preset (e.g., 'whisper-base') or a Hugging Face repo "
+            "id containing 'wav2vec' or 'whisper'."
+        )
+    return backend, repo_id
+
+
+def _ensure_audio_model(model_name: str = "wav2vec2-base", device: Optional[torch.device] = None):
+    backend, repo_id = _resolve_model_spec(model_name)
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if _AUDIO_MODEL is None or _AUDIO_PROCESSOR is None:
-        _AUDIO_PROCESSOR = Wav2Vec2Processor.from_pretrained(model_name)
-        _AUDIO_MODEL = Wav2Vec2Model.from_pretrained(model_name).to(device)
-        _AUDIO_MODEL.eval()
-    return _AUDIO_MODEL, _AUDIO_PROCESSOR
+
+    cache_key = (backend, repo_id, device.type)
+    cached = _AUDIO_MODELS.get(cache_key)
+    if cached is not None:
+        return backend, cached
+
+    if backend == "wav2vec2":
+        processor = Wav2Vec2Processor.from_pretrained(repo_id)
+        model = Wav2Vec2Model.from_pretrained(repo_id)
+        model = model.to(device)
+    elif backend == "whisper":
+        processor = WhisperProcessor.from_pretrained(repo_id)
+        dtype = torch.float16 if device.type == "cuda" else torch.float32
+        try:
+            model = WhisperModel.from_pretrained(repo_id, dtype=dtype)
+        except TypeError:
+            model = WhisperModel.from_pretrained(repo_id, torch_dtype=dtype)
+        model = model.to(device)
+    else:
+        raise RuntimeError(f"Unsupported audio backend '{backend}'")
+
+    model.eval()
+    for param in model.parameters():
+        param.requires_grad = False
+
+    _AUDIO_MODELS[cache_key] = (model, processor)
+    return backend, (model, processor)
 
 
-def extract_audio_embedding(audio_path: str, model_name: str = "facebook/wav2vec2-base", device: Optional[torch.device] = None) -> torch.Tensor:
+def extract_audio_embedding(
+    audio_path: str,
+    model_name: str = "wav2vec2-base",
+    device: Optional[torch.device] = None,
+) -> torch.Tensor:
     """
-    Load audio, run Wav2Vec2 model, and return a pooled embedding [D].
+    Load audio, run the requested model, and return a pooled embedding [D].
     """
-    model, processor = _ensure_audio_model(model_name=model_name, device=device)
+    backend, (model, processor) = _ensure_audio_model(model_name=model_name, device=device)
 
     speech, _ = librosa.load(audio_path, sr=16000)
-    inputs = processor(speech, sampling_rate=16000, return_tensors="pt", padding=True)
-    inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
-    with torch.no_grad():
-        hidden = model(**inputs).last_hidden_state  # [B, T, D]
+    if backend == "wav2vec2":
+        inputs = processor(speech, sampling_rate=16000, return_tensors="pt", padding=True)
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
-    mask = inputs.get("attention_mask")
-    if mask is None:
+        with torch.no_grad():
+            hidden = model(**inputs).last_hidden_state  # [B, T, D]
+
+        mask = inputs.get("attention_mask")
+        if mask is None:
+            emb = hidden.mean(dim=1)
+        else:
+            mask = mask.unsqueeze(-1)  # [B, T, 1]
+            emb = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
+
+    elif backend == "whisper":
+        proc_out = processor(speech, sampling_rate=16000, return_tensors="pt")
+        target_dtype = next(model.encoder.parameters()).dtype
+        input_features = proc_out.input_features.to(device=model.device, dtype=target_dtype)
+
+        with torch.no_grad():
+            hidden = model.encoder(input_features).last_hidden_state  # [B, T, D]
+
         emb = hidden.mean(dim=1)
-    else:
-        mask = mask.unsqueeze(-1)  # [B, T, 1]
-        emb = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
 
-    return emb.squeeze(0).detach().cpu()  # [D]
+    else:
+        raise RuntimeError(f"Unsupported audio backend '{backend}'")
+
+    return emb.squeeze(0).detach().cpu()
 
 
 def _iter_audio_files(root: str) -> List[str]:
@@ -57,14 +138,22 @@ def _iter_audio_files(root: str) -> List[str]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Extract mean-pooled Wav2Vec2 embeddings")
+    parser = argparse.ArgumentParser(description="Extract mean-pooled audio embeddings with selectable models")
     parser.add_argument("input", help="Audio file or directory root")
     parser.add_argument("--out_dir", default="audio_emb", help="Output directory for .pt embeddings")
-    parser.add_argument("--model", default="facebook/wav2vec2-base", help="Wav2Vec2 model name")
+    parser.add_argument(
+        "--model",
+        default="wav2vec2-base",
+        help=(
+            "Audio model preset or Hugging Face repo id. "
+            "Examples: wav2vec2-base, facebook/wav2vec2-base, whisper-small, openai/whisper-base."
+        ),
+    )
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    _ensure_audio_model(args.model, device=device)
+    backend, _ = _ensure_audio_model(args.model, device=device)
+    print(f"Using {backend} model '{args.model}' on {device}.")
 
     in_path = pathlib.Path(args.input)
     os.makedirs(args.out_dir, exist_ok=True)
